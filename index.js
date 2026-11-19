@@ -70,14 +70,7 @@ const READY_GAMES = [
   { id: '417777798347915272', name: 'Baldur’s Gate 3' },
   { id: '417777798347915273', name: 'Palworld' },
   { id: '417777798347915274', name: 'Lethal Company' },
-  { id: '417777798347915277', name: 'Among Us' },
-  { id: '417777798347915280', name: 'EA SPORTS FC 25' },
-  { id: '417777798347915281', name: 'EA SPORTS FC 26' },
-  { id: '417777798347915283', name: 'Forza Horizon 5' },
-  { id: '417777798347915284', name: 'Euro Truck Simulator 2' },
-  { id: '417777798347915317', name: 'Helldivers 2' },
-  { id: '417777798347915318', name: 'Marvel Rivals' },
-  { id: '417777798347915321', name: 'Geometry Dash' }
+  { id: '417777798347915277', name: 'Among Us' }
 ];
 
 let cachedGames = [...READY_GAMES];
@@ -368,9 +361,9 @@ client.on('interactionCreate', async (interaction) => {
         .addOptions([
           { label: 'Bütün Hesaplar', value: 'all_accounts', description: 'Eklediğiniz bütün hesaplara RPC uygular' },
           ...tokens.map((t, index) => ({
-            label: `${t.name} (${t.username})`,
+            label: `${t.name} (${t.username})`.slice(0, 100),
             value: index.toString(),
-            description: `Seçilen hesap: ${t.name}`
+            description: `Seçilen hesap: ${t.name}`.slice(0, 100)
           }))
         ]);
 
@@ -378,26 +371,61 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.reply({ content: 'RPC başlatmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
     }
 
-    // --- 2. HESAP SEÇİLDİKTEN SONRA -> ANINDA HAZIR OYUN MODALI ---
+    // --- 2. HESAP SEÇİLDİKTEN SONRA -> HAZIR OYUN LİSTESİ MENÜSÜ ---
     if (interaction.isStringSelectMenu() && interaction.customId === 'select_rpc_account') {
       const selectedAccountValue = interaction.values[0];
+      const games = cachedGames.length > 0 ? cachedGames : READY_GAMES;
+      const listToShow = games.slice(0, 25);
+
+      gameChoiceCache.set(userId, listToShow);
+
+      const gameMenu = new StringSelectMenuBuilder()
+        .setCustomId(`pick_ready_game_${selectedAccountValue}`)
+        .setPlaceholder('Hazır oyun listesinden seçin...')
+        .addOptions(
+          listToShow.map((game, idx) => ({
+            label: game.name.slice(0, 100),
+            value: String(idx),
+            description: `Hazır Oyun (${game.id})`.slice(0, 100),
+            emoji: '🎮'
+          }))
+        );
+
+      const searchBtn = new ButtonBuilder()
+        .setCustomId(`open_game_search_${selectedAccountValue}`)
+        .setLabel('Oyun Ara')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔎');
+
+      const menuRow = new ActionRowBuilder().addComponents(gameMenu);
+      const btnRow = new ActionRowBuilder().addComponents(searchBtn);
+
+      await interaction.update({
+        content: `🎮 **${games.length}** hazır oyun mevcut. Listeden seçin veya **Oyun Ara** ile arayın:`,
+        components: [menuRow, btnRow]
+      });
+    }
+
+    // --- 2.1. OYUN ARA BUTONU -> ARAMA MODALI ---
+    if (interaction.isButton() && interaction.customId.startsWith('open_game_search_')) {
+      const selectedAccountValue = interaction.customId.replace('open_game_search_', '');
 
       const modal = new ModalBuilder()
         .setCustomId(`ready_game_modal_${selectedAccountValue}`)
-        .setTitle('Hazır Oyun Seç');
+        .setTitle('Hazır Oyun Ara');
 
       const gameFilterInput = new TextInputBuilder()
         .setCustomId('ready_game_filter')
-        .setLabel('Hazır oyun adı yazın (boş bırakırsanız liste gelir)')
+        .setLabel('Oyun adı')
         .setPlaceholder('Örn: Minecraft, Valorant, GTA...')
         .setStyle(TextInputStyle.Short)
-        .setRequired(false);
+        .setRequired(true);
 
       modal.addComponents(new ActionRowBuilder().addComponents(gameFilterInput));
       await interaction.showModal(modal);
     }
 
-    // --- 3. HAZIR OYUN LİSTESİ MENÜSÜ ---
+    // --- 3. ARAMA SONUCU -> HAZIR OYUN LİSTESİ MENÜSÜ ---
     if (interaction.isModalSubmit() && interaction.customId.startsWith('ready_game_modal_')) {
       const selectedAccountValue = interaction.customId.replace('ready_game_modal_', '');
       const filterText = interaction.fields.getTextInputValue('ready_game_filter').trim().toLowerCase();
@@ -405,10 +433,7 @@ client.on('interactionCreate', async (interaction) => {
       await interaction.deferReply({ ephemeral: true });
 
       const games = cachedGames.length > 0 ? cachedGames : await getReadyGames();
-      const matchedGames = filterText
-        ? games.filter(g => g.name.toLowerCase().includes(filterText))
-        : games;
-
+      const matchedGames = games.filter(g => g.name.toLowerCase().includes(filterText));
       const listToShow = matchedGames.slice(0, 25);
 
       if (listToShow.length === 0) {
@@ -434,7 +459,7 @@ client.on('interactionCreate', async (interaction) => {
       const row = new ActionRowBuilder().addComponents(gameMenu);
 
       await interaction.editReply({
-        content: `🎮 **${matchedGames.length}** hazır oyun bulundu. RPC yapmak istediğiniz hazır oyunu seçin:`,
+        content: `🔎 **${matchedGames.length}** hazır oyun bulundu. RPC yapmak istediğiniz hazır oyunu seçin:`,
         components: [row]
       });
     }
@@ -540,7 +565,7 @@ client.on('interactionCreate', async (interaction) => {
         .addOptions([
           { label: 'Bütün Tokenleri Sil', value: 'clear_all_tokens', description: 'Size ait olan bütün tokenleri sistemden siler', emoji: '❌' },
           ...tokens.map((t, index) => ({
-            label: `${t.name} (${t.username})`,
+            label: `${t.name} (${t.username})`.slice(0, 100),
             value: index.toString(),
             description: 'Bu hesabı sil',
             emoji: '❌'
@@ -670,7 +695,7 @@ client.on('interactionCreate', async (interaction) => {
         .addOptions([
           { label: 'Bütün Hesaplar', value: 'all_accounts', description: 'Aktif olan bütün hesapların RPC-sini durdurur', emoji: '❌' },
           ...userRPCs.map((r, index) => ({
-            label: `${r.name} (${r.username})`,
+            label: `${r.name} (${r.username})`.slice(0, 100),
             value: index.toString(),
             description: 'Bu hesabın RPC-sini durdur',
             emoji: '❌'
